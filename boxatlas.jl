@@ -26,8 +26,7 @@ function on_robot_state(channel::String, msg::robot_state_t)
     
     world = default_frame(root_body(mech))
     pcom = relative_transform(state, atlas_world_frame, world) * com_position
-    set_configuration!(state, findjoint(mech, "base_x"), pcom.v[1])
-    set_configuration!(state, findjoint(mech, "base_z"), pcom.v[3])
+    set_configuration!(state, findjoint(mech, "floating_base"), [pcom.v[1], pcom.v[3], 0]) # TODO: orientation
 
     for (body, idxs, sign, θ) in (("lf", 7:9, 1, π), ("rf", 10:12, -1, π), ("lh", 1:3, 1, π/2), ("rh", 4:6, -1, π/2))
         position = Point3D(atlas_world_frame, msg.joint_position[idxs])
