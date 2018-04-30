@@ -1,7 +1,10 @@
 julia 0.6
-LCMCore
-DrakeLCMTypes
+AtlasRobot
 BotCoreLCMTypes
+DrakeLCMTypes
+HumanoidLCMSim
+LCMCore
+LearningMPC
 MAT
 MeshCatMechanisms
-LearningMPC
+StaticArrays

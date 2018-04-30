@@ -1,5 +1,8 @@
+__precompile__()
+
 module BoxAtlasControl
 
-# package code goes here
+include("qp_input.jl")
+include("state.jl")
 
 end # module

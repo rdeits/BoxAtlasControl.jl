@@ -1,5 +1,3 @@
-using Revise
-
 using LCMPolynomials
 using HumanoidLCMSim
 using LCMCore
@@ -89,8 +87,6 @@ function body_motion_data(name, splines::AbstractVector{<:PiecewisePolynomial})
     msg.control_pose_when_in_contact = false
     msg
 end
-
-
 
 function send_qp_controller_input()
     timestamp = Ref(0)
