@@ -114,7 +114,7 @@ function send_qp_controller_input()
     pelvis_coordinates = [0, 0, 0.8, 0, 0, 0]
     splines = [cubic_spline(now .+ SVector(0., 1, 2), SVector(c, c, c), SVector(0., 0, 0)) for c in pelvis_coordinates]
     splines[3] = cubic_spline(now .+ SVector(0, 1, 2), SVector(0.8, 0.9, 0.8), SVector(0., 0, 0))
-    @show splines
+    # @show splines
     msg.body_motion_data = [body_motion_data("pelvis", splines)]
 
     msg.num_external_wrenches = 0

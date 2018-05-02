@@ -10,7 +10,6 @@ struct JointIKParams{T}
     indices::Vector{Int}
     rotation_joint::Joint{T, Revolute{T}}
     extension_joint::Joint{T, Prismatic{T}}
-    rotation_offset::Float64
 end
 
 struct BoxAtlasStateTranslator{T, M <: MechanismState}
@@ -27,38 +26,43 @@ function BoxAtlasStateTranslator(robot::BoxAtlas{T}) where T
     state = MechanismState(mech)
     atlas_world_frame = CartesianFrame3D("atlas_world")
     add_frame!(root_body(mech), Transform3D(atlas_world_frame, default_frame(root_body(mech)), RotZ(0.0)))
-    bodies = Dict([s => findbody(mech, s) for s in ["core", "lf", "rf", "lh", "rh"]])
-    ik_data = [("lf", 7:9, π), ("rf", 10:12, π), ("lh", 1:3, π/2), ("rh", 4:6, π/2)]
+    bodies = Dict([s => findbody(mech, s) for s in ["pelvis", "l_foot_sole", "r_foot_sole", "l_hand_mount", "r_hand_mount"]])
+    ik_data = [
+        ("l_hand_mount", 1:3), 
+        ("r_hand_mount", 4:6),
+        ("l_foot_sole", 7:9), 
+        ("r_foot_sole", 10:12), 
+    ]
     ik_params = map(ik_data) do x
-        name, idx, offset = x
+        name, idx = x
         body = bodies[name]
         JointIKParams{T}(
             body, 
             idx, 
-            findjoint(mech, "core_to_$(name)_rotation"),
-            findjoint(mech, "core_to_$(name)_extension"),
-            offset)
+            findjoint(mech, "pelvis_to_$(name)_rotation"),
+            findjoint(mech, "pelvis_to_$(name)_extension"),
+        )
     end
     floating_base = findjoint(mech, "floating_base")
     BoxAtlasStateTranslator(robot, state, atlas_world_frame, bodies, ik_params, floating_base)
 end
 
 function _update_floating_base!(state::MechanismState, translator::BoxAtlasStateTranslator, msg::robot_state_t)
-    core_frame = default_frame(translator.bodies["core"])
+    pelvis_frame = default_frame(translator.bodies["pelvis"])
     atlas_world_frame = translator.atlas_world_frame
     mech = mechanism(translator.robot)
 
-    com_pose = Transform3D(core_frame, atlas_world_frame, 
+    pelvis_pose = Transform3D(pelvis_frame, atlas_world_frame, 
                            Quat(msg.pose.rotation.w, msg.pose.rotation.x, msg.pose.rotation.y, msg.pose.rotation.z),
                            SVector(msg.pose.translation.x, msg.pose.translation.y, msg.pose.translation.z))
-    com_twist = Twist(core_frame, 
+    pelvis_twist = Twist(pelvis_frame, 
                       atlas_world_frame, 
                       FreeVector3D(atlas_world_frame, msg.twist.angular_velocity.x, msg.twist.angular_velocity.y, msg.twist.angular_velocity.z),
                       FreeVector3D(atlas_world_frame, msg.twist.linear_velocity.x, msg.twist.linear_velocity.y, msg.twist.linear_velocity.z))
 
     world = default_frame(root_body(mech))
     floating_base = translator.floating_base
-    Hcom = relative_transform(state, atlas_world_frame, world) * com_pose
+    Hcom = relative_transform(state, atlas_world_frame, world) * pelvis_pose 
     rcom = RodriguesVec(rotation(Hcom))
     H = relative_transform(state, frame_before(floating_base), world)
     xaxis = H * FreeVector3D(frame_before(floating_base), floating_base.joint_type.x_axis)
@@ -67,55 +71,47 @@ function _update_floating_base!(state::MechanismState, translator::BoxAtlasState
                                                      translation(Hcom)' * yaxis.v, 
                                                      SVector(rcom.sx, rcom.sy, rcom.sz)' * floating_base.joint_type.rot_axis))
 
-    Tcom = transform(com_twist, relative_transform(state, atlas_world_frame, world))
-    set_velocity!(state, floating_base, SVector(linear(Tcom)' * floating_base.joint_type.x_axis, 
-                                                linear(Tcom)' * floating_base.joint_type.y_axis,
+    Tcom = transform(pelvis_twist, relative_transform(state, atlas_world_frame, world))
+    set_velocity!(state, floating_base, SVector(linear(Tcom)' * xaxis.v, 
+                                                linear(Tcom)' * yaxis.v,
                                                 angular(Tcom)' * floating_base.joint_type.rot_axis))
 end
 
 function _update_limb!(state::MechanismState, 
                        ik_params::JointIKParams, 
-                       atlas_world_frame::CartesianFrame3D, 
-                       world_frame::CartesianFrame3D,
+                       base_frame::CartesianFrame3D, 
                        msg::robot_state_t)
-    position = Point3D(atlas_world_frame, msg.joint_position[ik_params.indices])
-    rotation_joint = ik_params.rotation_joint
-    @assert rotation_joint.joint_type.axis == SVector(0, 1, 0) || rotation_joint.joint_type.axis == SVector(0, -1, 0)
-    extension_joint = ik_params.extension_joint
 
-    H = relative_transform(state, atlas_world_frame, frame_before(rotation_joint))
-    offset = H * position
-    θ = ik_params.rotation_offset + rotation_joint.joint_type.axis[2] * atan2(offset.v[1], offset.v[3])
+    joint = ik_params.rotation_joint
+    H = relative_transform(state, base_frame, frame_before(joint))
+    relative_position = H * Point3D(base_frame, msg.joint_position[ik_params.indices])
+    relative_velocity = H * FreeVector3D(base_frame, msg.joint_velocity[ik_params.indices])
+    θ = joint.joint_type.axis[1] * atan2(-relative_position.v[2], relative_position.v[3])
     if θ > π
         θ -= 2π
     elseif θ < -π
         θ += 2π
     end
-    set_configuration!(state, rotation_joint, θ)
+    set_configuration!(state, joint, θ)
+    set_velocity!(state, joint, 
+        dot(cross(relative_position, relative_velocity), 
+            FreeVector3D(frame_before(joint), joint.joint_type.axis)))
 
-    H = relative_transform(state, atlas_world_frame, frame_before(extension_joint))
-    offset = H * position
-    set_configuration!(state, extension_joint, offset.v' * extension_joint.joint_type.axis)
-
-    H = relative_transform(state, atlas_world_frame, frame_before(rotation_joint))
-    velocity = H * FreeVector3D(atlas_world_frame, msg.joint_velocity[ik_params.indices])
-    twist_before_joint = transform(relative_twist(state, frame_before(rotation_joint), world_frame), 
-                                   relative_transform(state, world_frame, frame_before(rotation_joint)))
-    displacement = H * position - Point3D(frame_before(rotation_joint), 0, 0, 0)
-    relative_velocity = velocity - FreeVector3D(twist_before_joint.frame, linear(twist_before_joint))
-    set_velocity!(state, rotation_joint, 
-                  cross(displacement, relative_velocity).v' * rotation_joint.joint_type.axis - angular(twist_before_joint)' * rotation_joint.joint_type.axis)
-
-    axis = FreeVector3D(frame_before(extension_joint), extension_joint.joint_type.axis)
-    set_velocity!(state, extension_joint, 
-                  dot(relative_transform(state, frame_before(rotation_joint), frame_before(extension_joint)) * relative_velocity,
-                      axis))
+    joint = ik_params.extension_joint
+    H = relative_transform(state, base_frame, frame_before(joint))
+    relative_position = H * Point3D(base_frame, msg.joint_position[ik_params.indices])
+    relative_velocity = H * FreeVector3D(base_frame, msg.joint_velocity[ik_params.indices])
+    set_configuration!(state, joint, 
+        dot(FreeVector3D(relative_position), FreeVector3D(frame_before(joint), joint.joint_type.axis)))
+    set_velocity!(state, joint, 
+        dot(relative_velocity, FreeVector3D(frame_before(joint), joint.joint_type.axis)))
 end
 
 function update!(translator::BoxAtlasStateTranslator, msg::robot_state_t)
     _update_floating_base!(translator.state, translator, msg)
+    pelvis_frame = default_frame(translator.bodies["pelvis"])
     for ik_params in translator.ik_params
-        _update_limb!(translator.state, ik_params, translator.atlas_world_frame, root_frame(mechanism(translator.robot)), msg)
+        _update_limb!(translator.state, ik_params, pelvis_frame, msg)
     end
 end
 
@@ -175,7 +171,7 @@ function (s::OneStepSimulator)(state::MechanismState)
             cubic_spline(times, p, v)
         end
     end)
-    @show splines[s.translator.bodies["core"]]
+    # @show splines[s.translator.bodies["pelvis"]]
     return splines
 end
 
